@@ -1,19 +1,20 @@
-// Telegram webhook handler for Vercel + Samsara
-// Node 18+ (Vercel) with global fetch
-
-import fetch from 'node-fetch';
+// api/telegram-webhook.js
+// CommonJS-версия для Vercel (@vercel/node), без node-fetch
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const SAMSARA_API_KEY = process.env.SAMSARA_API_KEY;
 
-const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
+const TELEGRAM_API = TELEGRAM_BOT_TOKEN
+  ? `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`
+  : null;
+
 const SAMSARA_BASE_URL = 'https://api.samsara.com';
 
 /**
- * Helper: send message back to Telegram
+ * Помощник: отправка сообщения в Telegram
  */
 async function sendTelegramMessage(chatId, text) {
-  if (!TELEGRAM_BOT_TOKEN) {
+  if (!TELEGRAM_API) {
     console.error('TELEGRAM_BOT_TOKEN is not set');
     return;
   }
@@ -33,8 +34,21 @@ async function sendTelegramMessage(chatId, text) {
 }
 
 /**
- * Find vehicle in Samsara by user text (truck number)
- * Checks: name, licensePlate, any externalIds value (exact match)
+ * Прочитать тело запроса (JSON из Telegram)
+ */
+function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', chunk => {
+      body += chunk;
+    });
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
+/**
+ * Поиск трака в Samsara по строке (номер 3–4 цифры, name, externalIds, номерной знак)
  */
 async function findVehicleByQuery(query) {
   if (!SAMSARA_API_KEY) {
@@ -86,8 +100,7 @@ async function findVehicleByQuery(query) {
 }
 
 /**
- * Get active fault codes for a specific vehicle
- * Uses legacy /v1/fleet/maintenance/list and filters by vehicle.id
+ * Получить активные ошибки для конкретного трака
  */
 async function getVehicleFaults(vehicleId) {
   const url = `${SAMSARA_BASE_URL}/v1/fleet/maintenance/list`;
@@ -119,7 +132,7 @@ async function getVehicleFaults(vehicleId) {
     checkEngine: null
   };
 
-  // Heavy-duty J1939 data
+  // Heavy-duty J1939
   if (found.j1939) {
     if (found.j1939.checkEngineLight) {
       result.checkEngine = {
@@ -140,7 +153,7 @@ async function getVehicleFaults(vehicleId) {
     }
   }
 
-  // Light-duty passenger data
+  // Light-duty passenger
   if (found.passenger) {
     if (found.passenger.checkEngineLight) {
       result.checkEngine = {
@@ -165,7 +178,7 @@ async function getVehicleFaults(vehicleId) {
 }
 
 /**
- * Format faults to human-readable string
+ * Форматируем текст ответа
  */
 function formatFaultsMessage(truckLabel, vehicle, faultsInfo) {
   const headerLines = [];
@@ -175,7 +188,7 @@ function formatFaultsMessage(truckLabel, vehicle, faultsInfo) {
 
   const lines = [headerLines.join('\n')];
 
-  // Check engine
+  // Check Engine
   if (faultsInfo.checkEngine && faultsInfo.checkEngine.data) {
     const ce = faultsInfo.checkEngine.data;
     const flags = [];
@@ -212,18 +225,35 @@ function formatFaultsMessage(truckLabel, vehicle, faultsInfo) {
   return lines.join('\n');
 }
 
-export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    res.status(200).json({ ok: true, message: 'Bot is running.' });
-    return;
-  }
-
+/**
+ * Основной обработчик Vercel
+ */
+module.exports = async (req, res) => {
   try {
-    const update = req.body;
+    if (req.method !== 'POST') {
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ ok: true, message: 'Bot is running.' }));
+      return;
+    }
+
+    const rawBody = await readRequestBody(req);
+    let update = {};
+    try {
+      update = rawBody ? JSON.parse(rawBody) : {};
+    } catch (e) {
+      console.error('Failed to parse JSON body', e);
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
 
     const message = update.message || update.edited_message;
     if (!message || !message.text) {
-      res.status(200).json({ ok: true });
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ ok: true }));
       return;
     }
 
@@ -232,28 +262,35 @@ export default async function handler(req, res) {
 
     if (!text) {
       await sendTelegramMessage(chatId, 'Отправь номер трака одной строкой.');
-      res.status(200).json({ ok: true });
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ ok: true }));
       return;
     }
 
-    // Basic command
     if (text === '/start') {
       await sendTelegramMessage(
         chatId,
-        'Отправь номер трака (как в Samsara), а я покажу его активные ошибки.'
+        'Отправь номер трака (3–4 цифры), а я покажу его активные ошибки по данным Samsara.'
       );
-      res.status(200).json({ ok: true });
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ ok: true }));
       return;
     }
 
-    const truckQuery = text;
+    // Вытаскиваем 3–4-значный номер трака из сообщения
+    const match = text.match(/\b(\d{3,4})\b/);
+    const truckQuery = match ? match[1] : text;
 
     await sendTelegramMessage(chatId, `Ищу трак \`${truckQuery}\` в Samsara...`);
 
     const vehicle = await findVehicleByQuery(truckQuery);
     if (!vehicle) {
       await sendTelegramMessage(chatId, `Трак \`${truckQuery}\` не найден в Samsara.`);
-      res.status(200).json({ ok: true });
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ ok: true }));
       return;
     }
 
@@ -261,11 +298,13 @@ export default async function handler(req, res) {
     const msg = formatFaultsMessage(truckQuery, vehicle, faultsInfo);
     await sendTelegramMessage(chatId, msg);
 
-    res.status(200).json({ ok: true });
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ ok: true }));
   } catch (err) {
     console.error('Handler error', err);
     try {
-      if (req.body && req.body.message && req.body.message.chat) {
+      if (TELEGRAM_API && req && req.body && req.body.message && req.body.message.chat) {
         await sendTelegramMessage(
           req.body.message.chat.id,
           'Произошла ошибка при запросе к Samsara. Сообщи администратору.'
@@ -274,6 +313,8 @@ export default async function handler(req, res) {
     } catch (e) {
       console.error('Error sending failure message', e);
     }
-    res.status(200).json({ ok: true });
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ ok: true }));
   }
-}
+};
