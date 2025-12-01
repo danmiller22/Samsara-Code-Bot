@@ -1,5 +1,5 @@
 // api/telegram-webhook.js
-// Samsara + Gemini, CommonJS для Vercel. ИИ даёт советы "что делать сейчас".
+// Telegram бот: Samsara + Gemini. ИИ даёт конкретные советы "что делать сейчас".
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const SAMSARA_API_KEY = process.env.SAMSARA_API_KEY;
@@ -12,7 +12,7 @@ const TELEGRAM_API = TELEGRAM_BOT_TOKEN
 const SAMSARA_BASE_URL = 'https://api.samsara.com';
 const GEMINI_MODEL = 'models/gemini-1.5-flash';
 
-// --- Telegram ---
+// ------------ Telegram helper ------------
 
 async function sendTelegramMessage(chatId, text) {
   if (!TELEGRAM_API) {
@@ -45,7 +45,7 @@ function readRequestBody(req) {
   });
 }
 
-// --- Samsara ---
+// ------------ Samsara: поиск трака и ошибки ------------
 
 async function findVehicleByQuery(query) {
   if (!SAMSARA_API_KEY) {
@@ -56,7 +56,7 @@ async function findVehicleByQuery(query) {
   const resp = await fetch(url, {
     method: 'GET',
     headers: {
-      'Authorization': `Bearer ${SAMSARA_API_KEY}`,
+      Authorization: `Bearer ${SAMSARA_API_KEY}`,
       'Content-Type': 'application/json'
     }
   });
@@ -71,7 +71,6 @@ async function findVehicleByQuery(query) {
   const vehicles = json.data || [];
 
   const normalizedQuery = String(query).trim().toLowerCase();
-
   let bestMatch = null;
 
   for (const v of vehicles) {
@@ -102,7 +101,7 @@ async function getVehicleFaults(vehicleId) {
   const resp = await fetch(url, {
     method: 'GET',
     headers: {
-      'Authorization': `Bearer ${SAMSARA_API_KEY}`,
+      Authorization: `Bearer ${SAMSARA_API_KEY}`,
       'Content-Type': 'application/json'
     }
   });
@@ -126,6 +125,7 @@ async function getVehicleFaults(vehicleId) {
     checkEngine: null
   };
 
+  // J1939
   if (found.j1939) {
     if (found.j1939.checkEngineLight) {
       result.checkEngine = {
@@ -146,6 +146,7 @@ async function getVehicleFaults(vehicleId) {
     }
   }
 
+  // Passenger/light-duty
   if (found.passenger) {
     if (found.passenger.checkEngineLight) {
       result.checkEngine = {
@@ -169,35 +170,31 @@ async function getVehicleFaults(vehicleId) {
   return result;
 }
 
-// --- Gemini (ИИ советы) ---
+// ------------ Gemini: советы по ошибкам ------------
 
 function buildFaultsPrompt(truckLabel, vehicle, faultsInfo) {
-  if (!faultsInfo.faults || faultsInfo.faults.length === 0) {
-    return null;
-  }
+  if (!faultsInfo.faults || faultsInfo.faults.length === 0) return null;
 
   const lines = [];
   lines.push('Ты помогаешь механику/диспетчеру по грузовым тракам.');
-  lines.push('У тебя есть список кодов ошибок двигателя/шасси из телематики (Samsara, J1939, OBD).');
-  lines.push('Для КАЖДОЙ ошибки нужно коротко и по-русски объяснить:');
-  lines.push('- что это за узел или система;');
-  lines.push('- что означает этот код;');
-  lines.push('- что ПРЯМО СЕЙЧАС имеет смысл проверить (разъёмы, проводку, утечки, датчик и т.д.);');
-  lines.push('- можно ли продолжать рейс или пора/нужно ехать в сервис, либо остановиться.');
+  lines.push('ДАНО: список кодов ошибок двигателя/шасси из телематики (Samsara, J1939, OBD).');
   lines.push('');
-  lines.push('Формат ответа:');
-  lines.push('- по каждой ошибке отдельный пронумерованный пункт;');
-  lines.push('- в каждом пункте 3–6 коротких строк:');
-  lines.push('  - "Что это";');
-  lines.push('  - "Что значит";');
-  lines.push('  - "Что проверить";');
-  lines.push('  - "Как поступить".');
+  lines.push('ЗАДАЧА: для КАЖДОЙ ошибки дать очень практичный ответ по шаблону:');
+  lines.push('1) "Что это:" кратко, какой узел/система.');
+  lines.push('2) "Что значит:" что фиксирует блок управления.');
+  lines.push('3) "Что проверить:" конкретный чек-лист (разъёмы, проводку, датчик, утечки и т.п.).');
+  lines.push('4) "Как поступить:" можно ли продолжать рейс, когда ехать в сервис, надо ли останавливать грузовик.');
   lines.push('');
-  lines.push('ВАЖНО по Manufacturer Assignable SPN:');
-  lines.push('- если в описании есть фраза "Manufacturer Assignable SPN", это внутренний код производителя;');
-  lines.push('- не выдумывай точный смысл такого кода;');
-  lines.push('- явно напиши, что это OEM-специфичный код и точная расшифровка возможна только в дилерской программе;');
-  lines.push('- можно дать ОБЩИЕ рекомендации по проверке проводки/разъёмов/нагрузки и по тому, когда ехать в сервис.');
+  lines.push('Требования:');
+  lines.push('- Пиши по-русски.');
+  lines.push('- Минимум теории, максимум конкретных действий.');
+  lines.push('- К каждому пункту 1–2 коротких предложения, без воды.');
+  lines.push('- Не придумывай несуществующих кодов, не меняй номера кодов.');
+  lines.push('');
+  lines.push('Особый случай Manufacturer Assignable SPN:');
+  lines.push('- если в описании есть "Manufacturer Assignable SPN", это OEM-специфичный код;');
+  lines.push('- напиши явно, что точное значение только в дилерской диагностике для этой марки;');
+  lines.push('- всё равно дай общие шаги: что проверить и как поступить.');
   lines.push('');
   lines.push(`Трак: ${truckLabel}`);
   if (vehicle.vin) lines.push(`VIN: ${vehicle.vin}`);
@@ -217,10 +214,8 @@ function buildFaultsPrompt(truckLabel, vehicle, faultsInfo) {
   return lines.join('\n');
 }
 
-async function explainFaultsWithGemini(truckLabel, vehicle, faultsInfo) {
-  if (!GEMINI_API_KEY) {
-    return null;
-  }
+async function getGeminiAdvice(truckLabel, vehicle, faultsInfo) {
+  if (!GEMINI_API_KEY) return null;
   const prompt = buildFaultsPrompt(truckLabel, vehicle, faultsInfo);
   if (!prompt) return null;
 
@@ -250,6 +245,7 @@ async function explainFaultsWithGemini(truckLabel, vehicle, faultsInfo) {
     const data = await resp.json();
     const candidates = data.candidates || [];
     if (!candidates.length) return null;
+
     const parts = (candidates[0].content && candidates[0].content.parts) || [];
     const textParts = parts
       .map(p => (typeof p.text === 'string' ? p.text : ''))
@@ -262,9 +258,9 @@ async function explainFaultsWithGemini(truckLabel, vehicle, faultsInfo) {
   }
 }
 
-// --- Формирование ответа ---
+// ------------ Формирование сообщения ------------
 
-function formatFaultsMessage(truckLabel, vehicle, faultsInfo, aiExplanation) {
+function formatFaultsMessage(truckLabel, vehicle, faultsInfo, aiAdvice) {
   const headerLines = [];
   headerLines.push(`*Трак:* ${truckLabel}`);
   if (vehicle.vin) headerLines.push(`*VIN:* ${vehicle.vin}`);
@@ -300,20 +296,19 @@ function formatFaultsMessage(truckLabel, vehicle, faultsInfo, aiExplanation) {
     if (f.short) parts.push(f.short);
     if (f.text) parts.push(f.text);
     if (f.occurrenceCount != null) parts.push(`(повторений: ${f.occurrenceCount})`);
-
     const line = parts.length > 0 ? parts.join(' — ') : 'Неизвестная ошибка';
     lines.push(`${num}. ${line}`);
   });
 
-  if (aiExplanation) {
+  if (aiAdvice) {
     lines.push('\n*Что делать сейчас:*');
-    lines.push(aiExplanation);
+    lines.push(aiAdvice);
   }
 
   return lines.join('\n');
 }
 
-// --- Основной хэндлер ---
+// ------------ Основной handler для Vercel ------------
 
 module.exports = async (req, res) => {
   try {
@@ -358,7 +353,7 @@ module.exports = async (req, res) => {
     if (text === '/start') {
       await sendTelegramMessage(
         chatId,
-        'Отправь номер трака (3–4 цифры). Я покажу активные ошибки из Samsara и дам советы, что делать сейчас.'
+        'Отправь номер трака (3–4 цифры). Я покажу активные ошибки из Samsara и дам конкретные советы, что делать сейчас.'
       );
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
@@ -366,6 +361,7 @@ module.exports = async (req, res) => {
       return;
     }
 
+    // вытаскиваем 3–4-значный номер
     const match = text.match(/\b(\d{3,4})\b/);
     const truckQuery = match ? match[1] : text;
 
@@ -381,8 +377,9 @@ module.exports = async (req, res) => {
     }
 
     const faultsInfo = await getVehicleFaults(vehicle.id);
-    const aiExplanation = await explainFaultsWithGemini(truckQuery, vehicle, faultsInfo);
-    const msg = formatFaultsMessage(truckQuery, vehicle, faultsInfo, aiExplanation);
+    const aiAdvice = await getGeminiAdvice(truckQuery, vehicle, faultsInfo);
+    const msg = formatFaultsMessage(truckQuery, vehicle, faultsInfo, aiAdvice);
+
     await sendTelegramMessage(chatId, msg);
 
     res.statusCode = 200;
