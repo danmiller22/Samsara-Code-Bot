@@ -1,0 +1,11 @@
+{
+  "name": "samsara-telegram-bot",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node api/telegram-webhook.js"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  }
+}
