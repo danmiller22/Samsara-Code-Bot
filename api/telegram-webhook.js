@@ -52,7 +52,7 @@ async function findVehicleByQuery(query) {
     throw new Error('SAMSARA_API_KEY is not set');
   }
 
-  const url = `${SAMASARA_BASE_URL}/fleet/vehicles?limit=512`.replace('SAMASARA', 'SAMSARA'); // защита от опечатки
+  const url = `${SAMSARA_BASE_URL}/fleet/vehicles?limit=512`;
   const resp = await fetch(url, {
     method: 'GET',
     headers: {
@@ -97,7 +97,7 @@ async function findVehicleByQuery(query) {
 }
 
 async function getVehicleFaults(vehicleId) {
-  const url = `${SAMASARA_BASE_URL}/v1/fleet/maintenance/list`.replace('SAMASARA', 'SAMSARA');
+  const url = `${SAMSARA_BASE_URL}/v1/fleet/maintenance/list`;
 
   const resp = await fetch(url, {
     method: 'GET',
@@ -182,7 +182,7 @@ function buildFaultsPrompt(truckLabel, vehicle, faultsInfo) {
   lines.push('Для КАЖДОЙ ошибки нужно коротко и по-русски объяснить:');
   lines.push('- что это за узел или система;');
   lines.push('- что означает этот код;');
-  lines.push('- что ПРЯМО СЕЙЧАС имеет смысл проверить (разъёмы, проводку, утечки, датчик, и т.д.);');
+  lines.push('- что ПРЯМО СЕЙЧАС имеет смысл проверить (разъёмы, проводку, утечки, датчик и т.д.);');
   lines.push('- можно ли продолжать рейс или пора/нужно ехать в сервис, либо остановиться.');
   lines.push('');
   lines.push('Формат ответа:');
