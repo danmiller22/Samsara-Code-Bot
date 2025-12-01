@@ -1,18 +1,17 @@
 // api/telegram-webhook.js
-// CommonJS-версия для Vercel (@vercel/node), без node-fetch
+// CommonJS-версия для Vercel. Samsara + Gemini расшифровка ошибок.
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const SAMSARA_API_KEY = process.env.SAMSARA_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 const TELEGRAM_API = TELEGRAM_BOT_TOKEN
   ? `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`
   : null;
 
 const SAMSARA_BASE_URL = 'https://api.samsara.com';
+const GEMINI_MODEL = 'models/gemini-1.5-flash';
 
-/**
- * Помощник: отправка сообщения в Telegram
- */
 async function sendTelegramMessage(chatId, text) {
   if (!TELEGRAM_API) {
     console.error('TELEGRAM_BOT_TOKEN is not set');
@@ -33,9 +32,6 @@ async function sendTelegramMessage(chatId, text) {
   }
 }
 
-/**
- * Прочитать тело запроса (JSON из Telegram)
- */
 function readRequestBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -47,9 +43,8 @@ function readRequestBody(req) {
   });
 }
 
-/**
- * Поиск трака в Samsara по строке (номер 3–4 цифры, name, externalIds, номерной знак)
- */
+// ---- Samsara ----
+
 async function findVehicleByQuery(query) {
   if (!SAMSARA_API_KEY) {
     throw new Error('SAMSARA_API_KEY is not set');
@@ -99,9 +94,6 @@ async function findVehicleByQuery(query) {
   return bestMatch;
 }
 
-/**
- * Получить активные ошибки для конкретного трака
- */
 async function getVehicleFaults(vehicleId) {
   const url = `${SAMSARA_BASE_URL}/v1/fleet/maintenance/list`;
 
@@ -132,7 +124,6 @@ async function getVehicleFaults(vehicleId) {
     checkEngine: null
   };
 
-  // Heavy-duty J1939
   if (found.j1939) {
     if (found.j1939.checkEngineLight) {
       result.checkEngine = {
@@ -153,7 +144,6 @@ async function getVehicleFaults(vehicleId) {
     }
   }
 
-  // Light-duty passenger
   if (found.passenger) {
     if (found.passenger.checkEngineLight) {
       result.checkEngine = {
@@ -177,10 +167,90 @@ async function getVehicleFaults(vehicleId) {
   return result;
 }
 
-/**
- * Форматируем текст ответа
- */
-function formatFaultsMessage(truckLabel, vehicle, faultsInfo) {
+// ---- Gemini ----
+
+function buildFaultsPrompt(truckLabel, vehicle, faultsInfo) {
+  if (!faultsInfo.faults || faultsInfo.faults.length === 0) {
+    return null;
+  }
+
+  const lines = [];
+  lines.push('У тебя есть данные по ошибкам грузовика (truck).');
+  lines.push('Нужно кратко и по-русски объяснить механику/диспетчеру:');
+  lines.push('- что за ошибка,');
+  lines.push('- типичные причины,');
+  lines.push('- насколько это срочно (можно продолжать рейс или лучше остановиться),');
+  lines.push('- без лишней воды, максимум по 2–3 предложения на ошибку.');
+  lines.push('');
+  lines.push('Формат ответа строго такой:');
+  lines.push('- для КАЖДОЙ ошибки отдельный пункт с номером и кодом;');
+  lines.push('- не придумывай кодов, используй те, что даны ниже;');
+  lines.push('- если ошибка мелкая, так и напиши; если критичная — явно укажи, что нужна остановка и сервис.');
+  lines.push('');
+  lines.push(`Трак: ${truckLabel}`);
+  if (vehicle.vin) lines.push(`VIN: ${vehicle.vin}`);
+  if (vehicle.licensePlate) lines.push(`License plate: ${vehicle.licensePlate}`);
+  lines.push('');
+  lines.push('Список ошибок:');
+
+  faultsInfo.faults.slice(0, 20).forEach((f, idx) => {
+    const parts = [];
+    if (f.code) parts.push(`code=${f.code}`);
+    if (f.short) parts.push(`short="${f.short}"`);
+    if (f.text) parts.push(`details="${f.text}"`);
+    const line = parts.join(', ');
+    lines.push(`${idx + 1}. ${line}`);
+  });
+
+  return lines.join('\n');
+}
+
+async function explainFaultsWithGemini(truckLabel, vehicle, faultsInfo) {
+  if (!GEMINI_API_KEY) {
+    return null;
+  }
+  const prompt = buildFaultsPrompt(truckLabel, vehicle, faultsInfo);
+  if (!prompt) return null;
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [{ text: prompt }]
+          }
+        ]
+      })
+    });
+
+    if (!resp.ok) {
+      const body = await resp.text();
+      console.error('Gemini error:', resp.status, body);
+      return null;
+    }
+
+    const data = await resp.json();
+    const candidates = data.candidates || [];
+    if (!candidates.length) return null;
+    const parts = candidates[0].content && candidates[0].content.parts || [];
+    const textParts = parts
+      .map(p => (typeof p.text === 'string' ? p.text : ''))
+      .filter(Boolean);
+    const text = textParts.join('\n').trim();
+    return text || null;
+  } catch (e) {
+    console.error('Gemini request failed', e);
+    return null;
+  }
+}
+
+// ---- Formatting ----
+
+function formatFaultsMessage(truckLabel, vehicle, faultsInfo, aiExplanation) {
   const headerLines = [];
   headerLines.push(`*Трак:* ${truckLabel}`);
   if (vehicle.vin) headerLines.push(`*VIN:* ${vehicle.vin}`);
@@ -188,7 +258,6 @@ function formatFaultsMessage(truckLabel, vehicle, faultsInfo) {
 
   const lines = [headerLines.join('\n')];
 
-  // Check Engine
   if (faultsInfo.checkEngine && faultsInfo.checkEngine.data) {
     const ce = faultsInfo.checkEngine.data;
     const flags = [];
@@ -206,28 +275,31 @@ function formatFaultsMessage(truckLabel, vehicle, faultsInfo) {
 
   if (!faultsInfo.faults || faultsInfo.faults.length === 0) {
     lines.push('\nАктивных ошибок не найдено.');
-    return lines.join('\n');
+  } else {
+    lines.push('\n*Активные ошибки (сырые данные Samsara):*');
+    faultsInfo.faults.slice(0, 20).forEach((f, idx) => {
+      const num = idx + 1;
+      const parts = [];
+      if (f.code) parts.push(`Код: \`${f.code}\``);
+      if (f.short) parts.push(f.short);
+      if (f.text) parts.push(f.text);
+      if (f.occurrenceCount != null) parts.push(`(повторений: ${f.occurrenceCount})`);
+
+      const line = parts.length > 0 ? parts.join(' — ') : 'Неизвестная ошибка';
+      lines.push(`${num}. ${line}`);
+    });
+
+    if (aiExplanation) {
+      lines.push('\n*Объяснение ошибок (Gemini):*');
+      lines.push(aiExplanation);
+    }
   }
-
-  lines.push('\n*Активные ошибки:*');
-  faultsInfo.faults.slice(0, 20).forEach((f, idx) => {
-    const num = idx + 1;
-    const parts = [];
-    if (f.code) parts.push(`Код: \`${f.code}\``);
-    if (f.short) parts.push(f.short);
-    if (f.text) parts.push(f.text);
-    if (f.occurrenceCount != null) parts.push(`(повторений: ${f.occurrenceCount})`);
-
-    const line = parts.length > 0 ? parts.join(' — ') : 'Неизвестная ошибка';
-    lines.push(`${num}. ${line}`);
-  });
 
   return lines.join('\n');
 }
 
-/**
- * Основной обработчик Vercel
- */
+// ---- Handler ----
+
 module.exports = async (req, res) => {
   try {
     if (req.method !== 'POST') {
@@ -271,7 +343,7 @@ module.exports = async (req, res) => {
     if (text === '/start') {
       await sendTelegramMessage(
         chatId,
-        'Отправь номер трака (3–4 цифры), а я покажу его активные ошибки по данным Samsara.'
+        'Отправь номер трака (3–4 цифры), я покажу активные ошибки из Samsara и дам краткое объяснение по данным Gemini.'
       );
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
@@ -279,7 +351,6 @@ module.exports = async (req, res) => {
       return;
     }
 
-    // Вытаскиваем 3–4-значный номер трака из сообщения
     const match = text.match(/\b(\d{3,4})\b/);
     const truckQuery = match ? match[1] : text;
 
@@ -295,7 +366,8 @@ module.exports = async (req, res) => {
     }
 
     const faultsInfo = await getVehicleFaults(vehicle.id);
-    const msg = formatFaultsMessage(truckQuery, vehicle, faultsInfo);
+    const aiExplanation = await explainFaultsWithGemini(truckQuery, vehicle, faultsInfo);
+    const msg = formatFaultsMessage(truckQuery, vehicle, faultsInfo, aiExplanation);
     await sendTelegramMessage(chatId, msg);
 
     res.statusCode = 200;
@@ -303,16 +375,6 @@ module.exports = async (req, res) => {
     res.end(JSON.stringify({ ok: true }));
   } catch (err) {
     console.error('Handler error', err);
-    try {
-      if (TELEGRAM_API && req && req.body && req.body.message && req.body.message.chat) {
-        await sendTelegramMessage(
-          req.body.message.chat.id,
-          'Произошла ошибка при запросе к Samsara. Сообщи администратору.'
-        );
-      }
-    } catch (e) {
-      console.error('Error sending failure message', e);
-    }
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({ ok: true }));
