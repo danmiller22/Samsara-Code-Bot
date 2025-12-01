@@ -1,5 +1,5 @@
 // api/telegram-webhook.js
-// CommonJS-версия для Vercel. Samsara + Gemini расшифровка ошибок.
+// Samsara + Gemini, CommonJS для Vercel. ИИ даёт советы "что делать сейчас".
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const SAMSARA_API_KEY = process.env.SAMSARA_API_KEY;
@@ -11,6 +11,8 @@ const TELEGRAM_API = TELEGRAM_BOT_TOKEN
 
 const SAMSARA_BASE_URL = 'https://api.samsara.com';
 const GEMINI_MODEL = 'models/gemini-1.5-flash';
+
+// --- Telegram ---
 
 async function sendTelegramMessage(chatId, text) {
   if (!TELEGRAM_API) {
@@ -43,14 +45,14 @@ function readRequestBody(req) {
   });
 }
 
-// ---- Samsara ----
+// --- Samsara ---
 
 async function findVehicleByQuery(query) {
   if (!SAMSARA_API_KEY) {
     throw new Error('SAMSARA_API_KEY is not set');
   }
 
-  const url = `${SAMSARA_BASE_URL}/fleet/vehicles?limit=512`;
+  const url = `${SAMASARA_BASE_URL}/fleet/vehicles?limit=512`.replace('SAMASARA', 'SAMSARA'); // защита от опечатки
   const resp = await fetch(url, {
     method: 'GET',
     headers: {
@@ -95,7 +97,7 @@ async function findVehicleByQuery(query) {
 }
 
 async function getVehicleFaults(vehicleId) {
-  const url = `${SAMSARA_BASE_URL}/v1/fleet/maintenance/list`;
+  const url = `${SAMASARA_BASE_URL}/v1/fleet/maintenance/list`.replace('SAMASARA', 'SAMSARA');
 
   const resp = await fetch(url, {
     method: 'GET',
@@ -167,7 +169,7 @@ async function getVehicleFaults(vehicleId) {
   return result;
 }
 
-// ---- Gemini ----
+// --- Gemini (ИИ советы) ---
 
 function buildFaultsPrompt(truckLabel, vehicle, faultsInfo) {
   if (!faultsInfo.faults || faultsInfo.faults.length === 0) {
@@ -175,17 +177,27 @@ function buildFaultsPrompt(truckLabel, vehicle, faultsInfo) {
   }
 
   const lines = [];
-  lines.push('У тебя есть данные по ошибкам грузовика (truck).');
-  lines.push('Нужно кратко и по-русски объяснить механику/диспетчеру:');
-  lines.push('- что за ошибка,');
-  lines.push('- типичные причины,');
-  lines.push('- насколько это срочно (можно продолжать рейс или лучше остановиться),');
-  lines.push('- без лишней воды, максимум по 2–3 предложения на ошибку.');
+  lines.push('Ты помогаешь механику/диспетчеру по грузовым тракам.');
+  lines.push('У тебя есть список кодов ошибок двигателя/шасси из телематики (Samsara, J1939, OBD).');
+  lines.push('Для КАЖДОЙ ошибки нужно коротко и по-русски объяснить:');
+  lines.push('- что это за узел или система;');
+  lines.push('- что означает этот код;');
+  lines.push('- что ПРЯМО СЕЙЧАС имеет смысл проверить (разъёмы, проводку, утечки, датчик, и т.д.);');
+  lines.push('- можно ли продолжать рейс или пора/нужно ехать в сервис, либо остановиться.');
   lines.push('');
-  lines.push('Формат ответа строго такой:');
-  lines.push('- для КАЖДОЙ ошибки отдельный пункт с номером и кодом;');
-  lines.push('- не придумывай кодов, используй те, что даны ниже;');
-  lines.push('- если ошибка мелкая, так и напиши; если критичная — явно укажи, что нужна остановка и сервис.');
+  lines.push('Формат ответа:');
+  lines.push('- по каждой ошибке отдельный пронумерованный пункт;');
+  lines.push('- в каждом пункте 3–6 коротких строк:');
+  lines.push('  - "Что это";');
+  lines.push('  - "Что значит";');
+  lines.push('  - "Что проверить";');
+  lines.push('  - "Как поступить".');
+  lines.push('');
+  lines.push('ВАЖНО по Manufacturer Assignable SPN:');
+  lines.push('- если в описании есть фраза "Manufacturer Assignable SPN", это внутренний код производителя;');
+  lines.push('- не выдумывай точный смысл такого кода;');
+  lines.push('- явно напиши, что это OEM-специфичный код и точная расшифровка возможна только в дилерской программе;');
+  lines.push('- можно дать ОБЩИЕ рекомендации по проверке проводки/разъёмов/нагрузки и по тому, когда ехать в сервис.');
   lines.push('');
   lines.push(`Трак: ${truckLabel}`);
   if (vehicle.vin) lines.push(`VIN: ${vehicle.vin}`);
@@ -212,7 +224,9 @@ async function explainFaultsWithGemini(truckLabel, vehicle, faultsInfo) {
   const prompt = buildFaultsPrompt(truckLabel, vehicle, faultsInfo);
   if (!prompt) return null;
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(
+    GEMINI_API_KEY
+  )}`;
 
   try {
     const resp = await fetch(url, {
@@ -236,7 +250,7 @@ async function explainFaultsWithGemini(truckLabel, vehicle, faultsInfo) {
     const data = await resp.json();
     const candidates = data.candidates || [];
     if (!candidates.length) return null;
-    const parts = candidates[0].content && candidates[0].content.parts || [];
+    const parts = (candidates[0].content && candidates[0].content.parts) || [];
     const textParts = parts
       .map(p => (typeof p.text === 'string' ? p.text : ''))
       .filter(Boolean);
@@ -248,7 +262,7 @@ async function explainFaultsWithGemini(truckLabel, vehicle, faultsInfo) {
   }
 }
 
-// ---- Formatting ----
+// --- Формирование ответа ---
 
 function formatFaultsMessage(truckLabel, vehicle, faultsInfo, aiExplanation) {
   const headerLines = [];
@@ -275,30 +289,31 @@ function formatFaultsMessage(truckLabel, vehicle, faultsInfo, aiExplanation) {
 
   if (!faultsInfo.faults || faultsInfo.faults.length === 0) {
     lines.push('\nАктивных ошибок не найдено.');
-  } else {
-    lines.push('\n*Активные ошибки (сырые данные Samsara):*');
-    faultsInfo.faults.slice(0, 20).forEach((f, idx) => {
-      const num = idx + 1;
-      const parts = [];
-      if (f.code) parts.push(`Код: \`${f.code}\``);
-      if (f.short) parts.push(f.short);
-      if (f.text) parts.push(f.text);
-      if (f.occurrenceCount != null) parts.push(`(повторений: ${f.occurrenceCount})`);
+    return lines.join('\n');
+  }
 
-      const line = parts.length > 0 ? parts.join(' — ') : 'Неизвестная ошибка';
-      lines.push(`${num}. ${line}`);
-    });
+  lines.push('\n*Активные ошибки (сырые данные Samsara):*');
+  faultsInfo.faults.slice(0, 20).forEach((f, idx) => {
+    const num = idx + 1;
+    const parts = [];
+    if (f.code) parts.push(`Код: \`${f.code}\``);
+    if (f.short) parts.push(f.short);
+    if (f.text) parts.push(f.text);
+    if (f.occurrenceCount != null) parts.push(`(повторений: ${f.occurrenceCount})`);
 
-    if (aiExplanation) {
-      lines.push('\n*Объяснение ошибок (Gemini):*');
-      lines.push(aiExplanation);
-    }
+    const line = parts.length > 0 ? parts.join(' — ') : 'Неизвестная ошибка';
+    lines.push(`${num}. ${line}`);
+  });
+
+  if (aiExplanation) {
+    lines.push('\n*Что делать сейчас:*');
+    lines.push(aiExplanation);
   }
 
   return lines.join('\n');
 }
 
-// ---- Handler ----
+// --- Основной хэндлер ---
 
 module.exports = async (req, res) => {
   try {
@@ -343,7 +358,7 @@ module.exports = async (req, res) => {
     if (text === '/start') {
       await sendTelegramMessage(
         chatId,
-        'Отправь номер трака (3–4 цифры), я покажу активные ошибки из Samsara и дам краткое объяснение по данным Gemini.'
+        'Отправь номер трака (3–4 цифры). Я покажу активные ошибки из Samsara и дам советы, что делать сейчас.'
       );
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
