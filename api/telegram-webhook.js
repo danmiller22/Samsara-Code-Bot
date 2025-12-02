@@ -141,6 +141,9 @@ async function getVehicleFaults(vehicleId) {
       };
     }
     if (Array.isArray(found.j1939.diagnosticTroubleCodes)) {
+      for (const code of found.j1939.diagnosticTrouCodes || found.j1939.diagnosticTroubleCodes) {
+        // original code used diagnosticTroubleCodes; keep fallback for possible typo
+      }
       for (const code of found.j1939.diagnosticTroubleCodes) {
         result.faults.push({
           source: 'j1939',
@@ -258,8 +261,15 @@ async function getGeminiAdvice(truckLabel, vehicle, faultsInfo) {
       .map(p => (typeof p.text === 'string' ? p.text : ''))
       .filter(Boolean);
     const text = textParts.join('\n').trim();
-    return t
-      // ------------ Бесплатные модели: Mistral и OpenRouter ------------
+    return text;
+  } catch (e) {
+    console.error('Gemini request failed', e);
+    return null;
+  }
+}
+
+// ------------ Бесплатные модели: Mistral и OpenRouter ------------
+
 async function callMistral(prompt) {
   if (!MISTRAL_API_KEY) return null;
   try {
@@ -344,12 +354,6 @@ async function getAiAdvice(truckLabel, vehicle, faultsInfo) {
   }
   // иначе пытаемся бесплатные API
   return await getFreeAIAdvice(truckLabel, vehicle, faultsInfo);
-}
-ext || null;
-  } catch (e) {
-    console.error('Gemini request failed', e);
-    return null;
-  }
 }
 
 // ------------ Формирование сообщения ------------
