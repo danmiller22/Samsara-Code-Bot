@@ -5,6 +5,13 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const SAMSARA_API_KEY = process.env.SAMSARA_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
+const MISTRAL_API_KEY  = process.env.MISTRAL_API_KEY;
+const MISTRAL_MODEL    = process.env.MISTRAL_MODEL || 'mistral-small-latest';
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const OPENROUTER_MODEL   = process.env.OPENROUTER_MODEL || 'cognitivecomputations/dolphin3.0-r1-mistral-24b:free';
+const OPENROUTER_REF     = process.env.OPENROUTER_REF || 'https://github.com/danmiller22/Samsara-Code-Bot';
+const OPENROUTER_TITLE   = process.env.OPENROUTER_TITLE || 'Samsara Code Bot';
+
 const TELEGRAM_API = TELEGRAM_BOT_TOKEN
   ? `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`
   : null;
@@ -251,7 +258,94 @@ async function getGeminiAdvice(truckLabel, vehicle, faultsInfo) {
       .map(p => (typeof p.text === 'string' ? p.text : ''))
       .filter(Boolean);
     const text = textParts.join('\n').trim();
+    return t
+      // ------------ Бесплатные модели: Mistral и OpenRouter ------------
+async function callMistral(prompt) {
+  if (!MISTRAL_API_KEY) return null;
+  try {
+    const resp = await fetch('https://api.mistral.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${MISTRAL_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: MISTRAL_MODEL,
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 512,
+        temperature: 0.3,
+      }),
+    });
+    if (!resp.ok) {
+      console.error('Mistral error:', resp.status, await resp.text());
+      return null;
+    }
+    const data = await resp.json();
+    const text = data.choices?.[0]?.message?.content?.trim();
     return text || null;
+  } catch (err) {
+    console.error('Mistral request failed', err);
+    return null;
+  }
+}
+
+async function callOpenRouter(prompt) {
+  if (!OPENROUTER_API_KEY) return null;
+  try {
+    const url = 'https://openrouter.ai/api/v1/chat/completions';
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        'HTTP-Referer': OPENROUTER_REF,
+        'X-Title': OPENROUTER_TITLE,
+      },
+      body: JSON.stringify({
+        model: OPENROUTER_MODEL,
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 512,
+        temperature: 0.5,
+      }),
+    });
+    if (!resp.ok) {
+      console.error('OpenRouter error:', resp.status, await resp.text());
+      return null;
+    }
+    const data = await resp.json();
+    const text = data.choices?.[0]?.message?.content?.trim();
+    return text || null;
+  } catch (err) {
+    console.error('OpenRouter request failed', err);
+    return null;
+  }
+}
+
+async function getFreeAIAdvice(truckLabel, vehicle, faultsInfo) {
+  const prompt = buildFaultsPrompt(truckLabel, vehicle, faultsInfo);
+  if (!prompt) return null;
+  // Пытаемся сначала Mistral, затем OpenRouter
+  if (MISTRAL_API_KEY) {
+    const result = await callMistral(prompt);
+    if (result) return result;
+  }
+  if (OPENROUTER_API_KEY) {
+    const result = await callOpenRouter(prompt);
+    if (result) return result;
+  }
+  return null;
+}
+
+async function getAiAdvice(truckLabel, vehicle, faultsInfo) {
+  // при наличии ключа Gemini используем его в первую очередь
+  if (GEMINI_API_KEY) {
+    const geminiAdvice = await getGeminiAdvice(truckLabel, vehicle, faultsInfo);
+    if (geminiAdvice) return geminiAdvice;
+  }
+  // иначе пытаемся бесплатные API
+  return await getFreeAIAdvice(truckLabel, vehicle, faultsInfo);
+}
+ext || null;
   } catch (e) {
     console.error('Gemini request failed', e);
     return null;
@@ -377,7 +471,7 @@ module.exports = async (req, res) => {
     }
 
     const faultsInfo = await getVehicleFaults(vehicle.id);
-    const aiAdvice = await getGeminiAdvice(truckQuery, vehicle, faultsInfo);
+    const aiAdvice = await getAiAdvice(truckQuery, vehicle, faultsInfo);
     const msg = formatFaultsMessage(truckQuery, vehicle, faultsInfo, aiAdvice);
 
     await sendTelegramMessage(chatId, msg);
