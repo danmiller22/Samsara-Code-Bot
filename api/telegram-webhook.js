@@ -451,7 +451,7 @@ module.exports = async (req, res) => {
     if (text === '/start') {
       await sendTelegramMessage(
         chatId,
-        'Отправь номер трака (3–4 цифры). Я покажу активные ошибки из Samsara.'
+        'Отправь номер трака. Я покажу активные ошибки из Samsara.'
       );
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
