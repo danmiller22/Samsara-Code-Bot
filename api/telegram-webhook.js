@@ -1,16 +1,19 @@
 // api/telegram-webhook.js
-// Telegram бот: Samsara + Gemini. ИИ даёт конкретные советы "что делать сейчас".
+// Telegram бот: Samsara + Gemini / Mistral / OpenRouter.
+// ИИ даёт конкретные советы "что делать сейчас". Поддержка RU / EN.
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const SAMSARA_API_KEY = process.env.SAMSARA_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-const MISTRAL_API_KEY  = process.env.MISTRAL_API_KEY;
-const MISTRAL_MODEL    = process.env.MISTRAL_MODEL || 'mistral-small-latest';
+const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY;
+const MISTRAL_MODEL = process.env.MISTRAL_MODEL || 'mistral-small-latest';
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const OPENROUTER_MODEL   = process.env.OPENROUTER_MODEL || 'cognitivecomputations/dolphin3.0-r1-mistral-24b:free';
-const OPENROUTER_REF     = process.env.OPENROUTER_REF || 'https://github.com/danmiller22/Samsara-Code-Bot';
-const OPENROUTER_TITLE   = process.env.OPENROUTER_TITLE || 'Samsara Code Bot';
+const OPENROUTER_MODEL =
+  process.env.OPENROUTER_MODEL || 'cognitivecomputations/dolphin3.0-r1-mistral-24b:free';
+const OPENROUTER_REF =
+  process.env.OPENROUTER_REF || 'https://github.com/danmiller22/Samsara-Code-Bot';
+const OPENROUTER_TITLE = process.env.OPENROUTER_TITLE || 'Samsara Code Bot';
 
 const TELEGRAM_API = TELEGRAM_BOT_TOKEN
   ? `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`
@@ -18,6 +21,20 @@ const TELEGRAM_API = TELEGRAM_BOT_TOKEN
 
 const SAMSARA_BASE_URL = 'https://api.samsara.com';
 const GEMINI_MODEL = 'models/gemini-1.5-flash';
+
+// ------------ Хранение языка чата (RU / EN) ------------
+
+const chatLanguages = new Map(); // key: chatId (string), value: 'ru' | 'en'
+
+function getChatLang(chatId) {
+  const key = String(chatId);
+  return chatLanguages.get(key) || 'ru';
+}
+
+function setChatLang(chatId, lang) {
+  const key = String(chatId);
+  chatLanguages.set(key, lang === 'en' ? 'en' : 'ru');
+}
 
 // ------------ Telegram helper ------------
 
@@ -142,7 +159,7 @@ async function getVehicleFaults(vehicleId) {
     }
     if (Array.isArray(found.j1939.diagnosticTroubleCodes)) {
       for (const code of found.j1939.diagnosticTrouCodes || found.j1939.diagnosticTroubleCodes) {
-        // original code used diagnosticTroubleCodes; keep fallback for possible typo
+        // backward compatibility for typo
       }
       for (const code of found.j1939.diagnosticTroubleCodes) {
         result.faults.push({
@@ -180,37 +197,61 @@ async function getVehicleFaults(vehicleId) {
   return result;
 }
 
-// ------------ Gemini: советы по ошибкам ------------
+// ------------ Gemini / Free LLM: советы по ошибкам ------------
 
-function buildFaultsPrompt(truckLabel, vehicle, faultsInfo) {
+function buildFaultsPrompt(truckLabel, vehicle, faultsInfo, lang) {
   if (!faultsInfo.faults || faultsInfo.faults.length === 0) return null;
 
   const lines = [];
-  lines.push('Ты помогаешь механику/диспетчеру по грузовым тракам.');
-  lines.push('ДАНО: список кодов ошибок двигателя/шасси из телематики (Samsara, J1939, OBD).');
+
+  if (lang === 'en') {
+    lines.push('You help a mechanic/dispatcher for heavy-duty trucks.');
+    lines.push('GIVEN: a list of engine/chassis fault codes from telematics (Samsara, J1939, OBD).');
+    lines.push('');
+    lines.push('TASK: For EACH fault, give a very practical answer in this structure:');
+    lines.push('1) "What it is:" briefly, which component/system.');
+    lines.push('2) "What it means:" what the ECU is detecting.');
+    lines.push('3) "What to check:" concrete checklist (connectors, wiring, sensor, leaks, etc.).');
+    lines.push('4) "What to do now:" can the truck continue the trip, when to go to shop, must it stop now.');
+    lines.push('');
+    lines.push('Requirements:');
+    lines.push('- Answer in English.');
+    lines.push('- Minimal theory, maximum practical steps.');
+    lines.push('- 1–2 short sentences per item, no fluff.');
+    lines.push('- Do not invent non-existent codes, do not change code numbers.');
+    lines.push('');
+    lines.push('Special case "Manufacturer Assignable SPN":');
+    lines.push('- if description contains "Manufacturer Assignable SPN", it is OEM-specific;');
+    lines.push('- explicitly say that the exact meaning is only in dealer diagnostics for that brand;');
+    lines.push('- still give general steps: what to check and what to do now.');
+  } else {
+    lines.push('Ты помогаешь механику/диспетчеру по грузовым тракам.');
+    lines.push('ДАНО: список кодов ошибок двигателя/шасси из телематики (Samsara, J1939, OBD).');
+    lines.push('');
+    lines.push('ЗАДАЧА: для КАЖДОЙ ошибки дать очень практичный ответ по шаблону:');
+    lines.push('1) "Что это:" кратко, какой узел/система.');
+    lines.push('2) "Что значит:" что фиксирует блок управления.');
+    lines.push('3) "Что проверить:" конкретный чек-лист (разъёмы, проводку, датчик, утечки и т.п.).');
+    lines.push('4) "Как поступить:" можно ли продолжать рейс, когда ехать в сервис, надо ли останавливать грузовик.');
+    lines.push('');
+    lines.push('Требования:');
+    lines.push('- Пиши по-русски.');
+    lines.push('- Минимум теории, максимум конкретных действий.');
+    lines.push('- К каждому пункту 1–2 коротких предложения, без воды.');
+    lines.push('- Не придумывай несуществующих кодов, не меняй номера кодов.');
+    lines.push('');
+    lines.push('Особый случай Manufacturer Assignable SPN:');
+    lines.push('- если в описании есть "Manufacturer Assignable SPN", это OEM-специфичный код;');
+    lines.push('- напиши явно, что точное значение только в дилерской диагностике для этой марки;');
+    lines.push('- всё равно дай общие шаги: что проверить и как поступить.');
+  }
+
   lines.push('');
-  lines.push('ЗАДАЧА: для КАЖДОЙ ошибки дать очень практичный ответ по шаблону:');
-  lines.push('1) "Что это:" кратко, какой узел/система.');
-  lines.push('2) "Что значит:" что фиксирует блок управления.');
-  lines.push('3) "Что проверить:" конкретный чек-лист (разъёмы, проводку, датчик, утечки и т.п.).');
-  lines.push('4) "Как поступить:" можно ли продолжать рейс, когда ехать в сервис, надо ли останавливать грузовик.');
-  lines.push('');
-  lines.push('Требования:');
-  lines.push('- Пиши по-русски.');
-  lines.push('- Минимум теории, максимум конкретных действий.');
-  lines.push('- К каждому пункту 1–2 коротких предложения, без воды.');
-  lines.push('- Не придумывай несуществующих кодов, не меняй номера кодов.');
-  lines.push('');
-  lines.push('Особый случай Manufacturer Assignable SPN:');
-  lines.push('- если в описании есть "Manufacturer Assignable SPN", это OEM-специфичный код;');
-  lines.push('- напиши явно, что точное значение только в дилерской диагностике для этой марки;');
-  lines.push('- всё равно дай общие шаги: что проверить и как поступить.');
-  lines.push('');
-  lines.push(`Трак: ${truckLabel}`);
+  lines.push(`Truck / Трак: ${truckLabel}`);
   if (vehicle.vin) lines.push(`VIN: ${vehicle.vin}`);
   if (vehicle.licensePlate) lines.push(`License plate: ${vehicle.licensePlate}`);
   lines.push('');
-  lines.push('Список ошибок:');
+  lines.push('Fault list / Список ошибок:');
 
   faultsInfo.faults.slice(0, 20).forEach((f, idx) => {
     const parts = [];
@@ -224,9 +265,9 @@ function buildFaultsPrompt(truckLabel, vehicle, faultsInfo) {
   return lines.join('\n');
 }
 
-async function getGeminiAdvice(truckLabel, vehicle, faultsInfo) {
+async function getGeminiAdvice(truckLabel, vehicle, faultsInfo, lang) {
   if (!GEMINI_API_KEY) return null;
-  const prompt = buildFaultsPrompt(truckLabel, vehicle, faultsInfo);
+  const prompt = buildFaultsPrompt(truckLabel, vehicle, faultsInfo, lang);
   if (!prompt) return null;
 
   const url = `https://generativelanguage.googleapis.com/v1beta/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(
@@ -277,14 +318,14 @@ async function callMistral(prompt) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${MISTRAL_API_KEY}`,
+        Authorization: `Bearer ${MISTRAL_API_KEY}`
       },
       body: JSON.stringify({
         model: MISTRAL_MODEL,
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 512,
-        temperature: 0.3,
-      }),
+        temperature: 0.3
+      })
     });
     if (!resp.ok) {
       console.error('Mistral error:', resp.status, await resp.text());
@@ -309,14 +350,14 @@ async function callOpenRouter(prompt) {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${OPENROUTER_API_KEY}`,
         'HTTP-Referer': OPENROUTER_REF,
-        'X-Title': OPENROUTER_TITLE,
+        'X-Title': OPENROUTER_TITLE
       },
       body: JSON.stringify({
         model: OPENROUTER_MODEL,
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 512,
-        temperature: 0.5,
-      }),
+        temperature: 0.5
+      })
     });
     if (!resp.ok) {
       console.error('OpenRouter error:', resp.status, await resp.text());
@@ -331,10 +372,9 @@ async function callOpenRouter(prompt) {
   }
 }
 
-async function getFreeAIAdvice(truckLabel, vehicle, faultsInfo) {
-  const prompt = buildFaultsPrompt(truckLabel, vehicle, faultsInfo);
+async function getFreeAIAdvice(truckLabel, vehicle, faultsInfo, lang) {
+  const prompt = buildFaultsPrompt(truckLabel, vehicle, faultsInfo, lang);
   if (!prompt) return null;
-  // Пытаемся сначала Mistral, затем OpenRouter
   if (MISTRAL_API_KEY) {
     const result = await callMistral(prompt);
     if (result) return result;
@@ -346,23 +386,27 @@ async function getFreeAIAdvice(truckLabel, vehicle, faultsInfo) {
   return null;
 }
 
-async function getAiAdvice(truckLabel, vehicle, faultsInfo) {
-  // при наличии ключа Gemini используем его в первую очередь
+async function getAiAdvice(truckLabel, vehicle, faultsInfo, lang) {
   if (GEMINI_API_KEY) {
-    const geminiAdvice = await getGeminiAdvice(truckLabel, vehicle, faultsInfo);
+    const geminiAdvice = await getGeminiAdvice(truckLabel, vehicle, faultsInfo, lang);
     if (geminiAdvice) return geminiAdvice;
   }
-  // иначе пытаемся бесплатные API
-  return await getFreeAIAdvice(truckLabel, vehicle, faultsInfo);
+  return await getFreeAIAdvice(truckLabel, vehicle, faultsInfo, lang);
 }
 
 // ------------ Формирование сообщения ------------
 
-function formatFaultsMessage(truckLabel, vehicle, faultsInfo, aiAdvice) {
+function formatFaultsMessage(truckLabel, vehicle, faultsInfo, aiAdvice, lang) {
   const headerLines = [];
-  headerLines.push(`*Трак:* ${truckLabel}`);
-  if (vehicle.vin) headerLines.push(`*VIN:* ${vehicle.vin}`);
-  if (vehicle.licensePlate) headerLines.push(`*Номер:* ${vehicle.licensePlate}`);
+  if (lang === 'en') {
+    headerLines.push(`*Truck:* ${truckLabel}`);
+    if (vehicle.vin) headerLines.push(`*VIN:* ${vehicle.vin}`);
+    if (vehicle.licensePlate) headerLines.push(`*Plate:* ${vehicle.licensePlate}`);
+  } else {
+    headerLines.push(`*Трак:* ${truckLabel}`);
+    if (vehicle.vin) headerLines.push(`*VIN:* ${vehicle.vin}`);
+    if (vehicle.licensePlate) headerLines.push(`*Номер:* ${vehicle.licensePlate}`);
+  }
 
   const lines = [headerLines.join('\n')];
 
@@ -382,26 +426,50 @@ function formatFaultsMessage(truckLabel, vehicle, faultsInfo, aiAdvice) {
   }
 
   if (!faultsInfo.faults || faultsInfo.faults.length === 0) {
-    lines.push('\nАктивных ошибок не найдено.');
+    lines.push(
+      lang === 'en'
+        ? '\nNo active faults found.'
+        : '\nАктивных ошибок не найдено.'
+    );
     return lines.join('\n');
   }
 
-  lines.push('\n*Активные ошибки (сырые данные Samsara):*');
+  lines.push(
+    lang === 'en'
+      ? '\n*Active faults (raw Samsara data):*'
+      : '\n*Активные ошибки (сырые данные Samsara):*'
+  );
+
   faultsInfo.faults.slice(0, 20).forEach((f, idx) => {
     const num = idx + 1;
     const parts = [];
-    if (f.code) parts.push(`Код: \`${f.code}\``);
+    if (f.code) parts.push(lang === 'en' ? `Code: \`${f.code}\`` : `Код: \`${f.code}\``);
     if (f.short) parts.push(f.short);
     if (f.text) parts.push(f.text);
-    if (f.occurrenceCount != null) parts.push(`(повторений: ${f.occurrenceCount})`);
-    const line = parts.length > 0 ? parts.join(' — ') : 'Неизвестная ошибка';
+    if (f.occurrenceCount != null) {
+      parts.push(
+        lang === 'en'
+          ? `(occurrences: ${f.occurrenceCount})`
+          : `(повторений: ${f.occurrenceCount})`
+      );
+    }
+    const line = parts.length > 0 ? parts.join(' — ') : (lang === 'en' ? 'Unknown fault' : 'Неизвестная ошибка');
     lines.push(`${num}. ${line}`);
   });
 
   if (aiAdvice) {
-    lines.push('\n*Что делать сейчас:*');
+    lines.push(
+      lang === 'en' ? '\n*What to do now:*' : '\n*Что делать сейчас:*'
+    );
     lines.push(aiAdvice);
   }
+
+  // Футер с Dan Miller
+  lines.push(
+    lang === 'en'
+      ? '\nIf you need help with repair or diagnostics, please contact Dan Miller.'
+      : '\nЕсли нужна помощь по ремонту или диагностике, обращайтесь к Dan Miller.'
+  );
 
   return lines.join('\n');
 }
@@ -439,19 +507,54 @@ module.exports = async (req, res) => {
 
     const chatId = message.chat.id;
     const text = String(message.text || '').trim();
+    let lang = getChatLang(chatId);
 
     if (!text) {
-      await sendTelegramMessage(chatId, 'Отправь номер трака одной строкой.');
+      await sendTelegramMessage(
+        chatId,
+        lang === 'en'
+          ? 'Send the truck number in one line.'
+          : 'Отправь номер трака одной строкой.'
+      );
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ ok: true }));
       return;
     }
 
+    // /start — выбор языка
     if (text === '/start') {
+      setChatLang(chatId, 'ru'); // по умолчанию русский
+      lang = 'ru';
       await sendTelegramMessage(
         chatId,
-        'Отправь номер трака. Я покажу активные ошибки из Samsara.'
+        'Выберите язык / Choose language:\n/ru — Русский\n/en — English\n\nПосле выбора языка просто отправьте номер трака (3–4 цифры).'
+      );
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (text === '/ru') {
+      setChatLang(chatId, 'ru');
+      lang = 'ru';
+      await sendTelegramMessage(
+        chatId,
+        'Язык бота: *Русский*.\nОтправь номер трака (3–4 цифры), я покажу активные ошибки из Samsara и дам советы.'
+      );
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (text === '/en') {
+      setChatLang(chatId, 'en');
+      lang = 'en';
+      await sendTelegramMessage(
+        chatId,
+        'Bot language: *English*.\nSend the truck number (3–4 digits), I will show active Samsara faults and give advice.'
       );
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
@@ -463,11 +566,21 @@ module.exports = async (req, res) => {
     const match = text.match(/\b(\d{3,4})\b/);
     const truckQuery = match ? match[1] : text;
 
-    await sendTelegramMessage(chatId, `Ищу трак \`${truckQuery}\` в Samsara...`);
+    await sendTelegramMessage(
+      chatId,
+      lang === 'en'
+        ? `Searching truck \`${truckQuery}\` in Samsara...`
+        : `Ищу трак \`${truckQuery}\` в Samsara...`
+    );
 
     const vehicle = await findVehicleByQuery(truckQuery);
     if (!vehicle) {
-      await sendTelegramMessage(chatId, `Трак \`${truckQuery}\` не найден в Samsara.`);
+      await sendTelegramMessage(
+        chatId,
+        lang === 'en'
+          ? `Truck \`${truckQuery}\` not found in Samsara.`
+          : `Трак \`${truckQuery}\` не найден в Samsara.`
+      );
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ ok: true }));
@@ -475,8 +588,8 @@ module.exports = async (req, res) => {
     }
 
     const faultsInfo = await getVehicleFaults(vehicle.id);
-    const aiAdvice = await getAiAdvice(truckQuery, vehicle, faultsInfo);
-    const msg = formatFaultsMessage(truckQuery, vehicle, faultsInfo, aiAdvice);
+    const aiAdvice = await getAiAdvice(truckQuery, vehicle, faultsInfo, lang);
+    const msg = formatFaultsMessage(truckQuery, vehicle, faultsInfo, aiAdvice, lang);
 
     await sendTelegramMessage(chatId, msg);
 
