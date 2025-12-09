@@ -548,8 +548,8 @@ function formatFaultsMessage(truckLabel, vehicle, faultsInfo, aiAdvice, lang) {
     // даже если нет ошибок — добавим футер с Dan Miller
     lines.push(
       lang === 'en'
-        ? '\nIf you need help with repair or diagnostics, please contact Dan Miller.'
-        : '\nЕсли нужна помощь по ремонту или диагностике, обращайтесь к Dan Miller.'
+        ? '\nIf you need help with repair or diagnostics, please contact Dan Miller or Ben Fleet.'
+        : '\nЕсли нужна помощь по ремонту или диагностике, обращайтесь к Dan Miller или Ben Fleet.'
     );
     return lines.join('\n');
   }
