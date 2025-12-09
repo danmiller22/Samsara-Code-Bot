@@ -643,8 +643,8 @@ module.exports = async (req, res) => {
         await sendTelegramMessage(
           chatId,
           lang === 'en'
-            ? 'Language set to *English*.\nSend the truck number (3–4 digits), I will show active Samsara faults.'
-            : 'Язык бота: *Русский*.\nОтправь номер трака (3–4 цифры), я покажу активные ошибки из Samsara.'
+            ? 'Language set to *English*.\nSend the truck number, I will show active Samsara faults.'
+            : 'Язык бота: *Русский*.\nОтправь номер трака, я покажу активные ошибки из Samsara.'
         );
       } else {
         await answerCallbackQuery(cb.id);
